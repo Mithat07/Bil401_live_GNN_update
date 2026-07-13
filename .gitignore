@@ -1,0 +1,46 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# IDE
+.vscode/
+.idea/
+
+# Dataset and processed files
+data/
+processed/
+*.csv
+*.parquet
+
+# Trained models and checkpoints
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+
+# Experiment outputs
+runs/
+outputs/
+logs/
+*.log
+
+# Spark
+spark-warehouse/
+metastore_db/
+derby.log
+checkpoint/
+checkpoints/
+
+# Operating system
+.DS_Store
+Thumbs.db
+desktop.ini
