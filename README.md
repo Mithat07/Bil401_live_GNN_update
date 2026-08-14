@@ -29,14 +29,119 @@ python src/preprocess_elliptic.py --data-dir data/elliptic --out-dir processed
 # 2) Eğitim (CPU'da ~dakikalar; full-batch)
 python src/train_graphsage.py --data processed/data.pt --out-dir runs/sage_v1
 
+# 2b) Dağıtık offline eğitim (örnek: 2 GPU)
+python -m torch.distributed.run --nproc_per_node=2 src/train_graphsage.py \
+    --distributed --device cuda --data processed/data.pt --out-dir runs/sage_v1_ddp
+
 # 3) Streaming başlangıç durumu (faz 2'ye köprü)
 python src/export_initial_embeddings.py \
     --data processed/data.pt --model runs/sage_v1/model_best.pt \
     --out runs/sage_v1/initial_state.pt
+
+## CPU tabanlı yerel Docker dağıtımı (2 worker)
+Aşağıdaki adımlar, tek GPU yerine CPU üzerinde iki containerlı yerel dağıtık çalışma sağlar.
+
+```bash
+# 1) Docker image oluştur
+docker compose build
+
+# 2) Kafka ve iki consumer container'ı ayağa kaldır
+docker compose up -d
+
+# 3) Consumer loglarını takip et
+docker compose logs -f consumer1
+# veya
+docker compose logs -f consumer2
 ```
 
-## Tasarım kararları (rapora girecek)
+Her consumer aynı Kafka consumer group içinde çalışır; bu sayede topic partition'ları
+iki container arasında paylaşılır. Consumer çıktıları `runs/kafka/consumer1` ve
+`runs/kafka/consumer2` klasörlerine yazılır.
 
+# 4) Kafka producer başlat
+python src/kafka_producer.py --stream processed/stream_edges.csv `
+    --bootstrap localhost:9092 --topic edges --events-per-sec 500 --from-ts 35
+````
+# 5) Çalışmayı durdur ve çıktı kontrol et
+docker compose down
+```
+
+## Spark cluster + MinIO ile genişletilmiş yerel dağıtım
+Aşağıdaki `docker-compose.cluster.yml` daha gerçekçi bir dağıtık test hattı kurar:
+- `zookeeper` + `kafka`
+- `spark-master`
+- `spark-worker1`, `spark-worker2`
+- `minio` (opsiyonel paylaşılan depolama)
+- `gnn-app` (Spark submit için Python çalışma alanı)
+
+```bash
+
+# 0a) Once hafif smoke image'ini olustur (Torch kurulmaz)
+docker build --target spark-base --memory=2g `
+  -f Dockerfile.spark-run `
+  -t elliptic-spark-smoke:3.5.1 .
+
+# 0b) Smoke testi basarili olduktan sonra CPU-only model runner'ini olustur
+docker build --memory=4g --memory-swap=4g `
+  -f Dockerfile.spark-run `
+  -t elliptic-spark-runner:light .
+
+# 1) Cluster bileşenlerini ayağa kaldır
+docker compose -f docker-compose.cluster.yml up -d
+
+# 2) Topic oluşturulur
+docker compose -f docker-compose.cluster.yml exec kafka `
+  kafka-topics --bootstrap-server kafka:29092 `
+  --create --if-not-exists --topic edges `
+  --partitions 2 --replication-factor 1
+
+# 3) Consumer job'unu Spark bulunan runner container'inda baslat.
+# Dusuk RAM icin politikalari tek tek calistir; POLICY ve OUT_DIR'i her
+# calistirmada full_always/local_always/local_periodic/local_adaptive olarak degistir.
+$POLICY = "local_adaptive"
+$OUT_DIR = "runs/kafka/local_adaptive_t0.6"
+
+docker compose -f docker-compose.cluster.yml run --rm spark-runner `
+  /opt/spark/bin/spark-submit `
+  --master spark://spark-master:7077 `
+  --driver-memory 2g `
+  --executor-memory 768m `
+  --executor-cores 1 `
+  --jars /opt/spark/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/spark-token-provider-kafka-0-10_2.12-3.5.1.jar,/opt/spark/jars/kafka-clients-3.5.1.jar,/opt/spark/jars/commons-pool2-2.11.1.jar `
+  src/spark_consumer.py `
+  --data processed/data.pt `
+  --model runs/sage_v1/model_best.pt `
+  --initial-state runs/sage_v1/initial_state.pt `
+  --policy local_adaptive `
+  --tau 0.6 `
+  --bootstrap kafka:29092 `
+  --topic edges `
+  --trigger-sec 2 `
+  --idle-timeout-sec 60 `
+  --out-dir runs/kafka/local_adaptive_fixed
+
+Bu komut Spark tarafındaki consumer job'unu `spark-runner` içinde başlatır.
+Mevcut `foreachBatch` + `toPandas()` tasarımında `StreamingEngine` ve model
+hesabı driver'da yapılır; Spark worker'lar Kafka/DataFrame görevlerini yürütür.
+`--policy all` dört engine'i aynı anda bellekte tuttuğu için düşük RAM'li
+sistemlerde yukarıdaki gibi politikaları ayrı ayrı çalıştırın.
+
+# 4) Kafka producer host üzerinde başlatılır
+python src/kafka_producer.py `
+  --stream processed/stream_edges.csv `
+  --bootstrap localhost:9092 `
+  --topic edges `
+  --events-per-sec 500 `
+  --from-ts 35
+
+# 4) Cluster'ı kapat
+docker compose -f docker-compose.cluster.yml down
+```
+
+Bu yapıdaki `checkpointLocation` ve `out-dir` için MinIO veya paylaşılan HDFS'e geçmek istersen:
+- Spark ayarlarını `spark.hadoop.fs.s3a.endpoint` / AWS S3 uyumlu endpoint ile genişlet
+- `checkpointLocation` ve model dosyalarını `s3a://...` yoluna taşı
+- `minio` ile `http://minio:9000` kullanarak yerel S3 benzeri depolama sağlayabilirsin
 - **Temporal split 34/49** (train ts 1–29, val 30–34, test 35–49): literatür standardı;
   rastgele split temporal leakage yaratırdı. Test dönemi = streaming replay dönemi.
 - **`time_step` özellik olarak modele verilmez** (leakage). Standardizasyon yalnızca

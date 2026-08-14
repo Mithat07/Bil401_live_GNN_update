@@ -44,3 +44,6 @@ checkpoints/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+data.zip
+data/elliptic/elliptic_txs_features.csv

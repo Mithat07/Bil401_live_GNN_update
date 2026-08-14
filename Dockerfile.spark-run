@@ -1,0 +1,40 @@
+FROM apache/spark:3.5.1 AS spark-base
+
+USER root
+
+ENV SPARK_HOME=/opt/spark \
+    PYSPARK_PYTHON=python3 \
+    PYSPARK_DRIVER_PYTHON=python3 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates procps && \
+    rm -rf /var/lib/apt/lists/*
+
+# Structured Streaming Kafka connector. Spark, Scala and Java are inherited
+# from the exact same image used by master and workers.
+RUN curl -fsSL "https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.12/3.5.1/spark-sql-kafka-0-10_2.12-3.5.1.jar" \
+        -o "${SPARK_HOME}/jars/spark-sql-kafka-0-10_2.12-3.5.1.jar" && \
+    curl -fsSL "https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.12/3.5.1/spark-token-provider-kafka-0-10_2.12-3.5.1.jar" \
+        -o "${SPARK_HOME}/jars/spark-token-provider-kafka-0-10_2.12-3.5.1.jar" && \
+    curl -fsSL "https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.5.1/kafka-clients-3.5.1.jar" \
+        -o "${SPARK_HOME}/jars/kafka-clients-3.5.1.jar" && \
+    curl -fsSL "https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar" \
+        -o "${SPARK_HOME}/jars/commons-pool2-2.11.1.jar"
+
+WORKDIR /app
+
+FROM spark-base AS runtime
+
+# Python 3.8 ile uyumlu, CPU-only ve sabitlenmis runtime paketleri. CUDA
+# wheel'larini indirmemek build boyutunu ve suresini ciddi bicimde azaltir.
+RUN python3 -m pip install --no-cache-dir \
+        torch==2.4.1 \
+        --index-url https://download.pytorch.org/whl/cpu && \
+    python3 -m pip install --no-cache-dir \
+        "numpy<2" \
+        pandas==2.0.3 \
+        scikit-learn==1.3.2 \
+        torch-geometric==2.5.3
+
+CMD ["/opt/spark/bin/spark-submit", "--master", "local[2]", "src/spark_consumer_smoke.py", "--bootstrap", "kafka:29092", "--topic", "edges", "--trigger-sec", "2", "--idle-timeout-sec", "30", "--out-dir", "runs/kafka/smoke"]

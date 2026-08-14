@@ -1,0 +1,49 @@
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+
+  consumer1:
+    build: .
+    depends_on:
+      - kafka
+    volumes:
+      - ./:/app
+    working_dir: /app
+    command: bash -lc "python src/kafka_streaming_worker.py --data processed/data.pt \
+      --model runs/sage_v1/model_best.pt --initial-state runs/sage_v1/initial_state.pt \
+      --bootstrap kafka:29092 --topic edges --group-id gnn-refresh \
+      --batch-size 2000 --batch-timeout 1.0 --idle-timeout 30 \
+      --out-dir /app/runs/kafka/consumer1"
+
+  consumer2:
+    build: .
+    depends_on:
+      - kafka
+    volumes:
+      - ./:/app
+    working_dir: /app
+    command: bash -lc "python src/kafka_streaming_worker.py --data processed/data.pt \
+      --model runs/sage_v1/model_best.pt --initial-state runs/sage_v1/initial_state.pt \
+      --bootstrap kafka:29092 --topic edges --group-id gnn-refresh \
+      --batch-size 2000 --batch-timeout 1.0 --idle-timeout 30 \
+      --out-dir /app/runs/kafka/consumer2"

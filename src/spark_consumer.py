@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from pathlib import Path
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json
@@ -42,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model", required=True)
     p.add_argument("--initial-state", required=True)
     p.add_argument("--policy", required=True,
-                   choices=["full_always", "local_always", "local_periodic", "local_adaptive"])
+                   choices=["full_always", "local_always", "local_periodic", "local_adaptive", "all"])
     p.add_argument("--period", type=int, default=5)
     p.add_argument("--tau", type=float, default=0.5)
     p.add_argument("--alpha", type=float, default=0.5)
@@ -61,11 +62,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    engine = StreamingEngine(
-        data=args.data, model=args.model, initial_state=args.initial_state,
-        policy=args.policy, out_dir=args.out_dir,
-        period=args.period, tau=args.tau, alpha=args.alpha,
-        beta=args.beta, gamma=args.gamma, norm=args.staleness_norm)
+    policy_names = (["full_always", "local_always", "local_periodic", "local_adaptive"]
+                    if args.policy == "all" else [args.policy])
+    engines = {}
+    for name in policy_names:
+        out_dir = Path(args.out_dir) / name if args.policy == "all" else Path(args.out_dir)
+        engines[name] = StreamingEngine(
+            data=args.data, model=args.model, initial_state=args.initial_state,
+            policy=name, out_dir=str(out_dir),
+            period=args.period, tau=args.tau, alpha=args.alpha,
+            beta=args.beta, gamma=args.gamma, norm=args.staleness_norm)
 
     spark = (SparkSession.builder.appName("gnn-refresh-serving").getOrCreate())
     spark.sparkContext.setLogLevel("WARN")
@@ -91,10 +97,11 @@ def main() -> None:
         if len(pdf) == 0:
             return
         last_data["t"] = time.time()
-        row = engine.process_batch(pdf)
-        e2e = f"{row['e2e_ms']:.0f}ms" if row["e2e_ms"] is not None else "n/a"
-        print(f"[batch {row['batch']}] edges={row['n_edges']} "
-              f"refreshed={row['n_refreshed']} wall={row['wall_ms']:.0f}ms e2e={e2e}")
+        for policy_name, engine in engines.items():
+            row = engine.process_batch(pdf)
+            e2e = f"{row['e2e_ms']:.0f}ms" if row["e2e_ms"] is not None else "n/a"
+            print(f"[{policy_name}] [batch {row['batch']}] edges={row['n_edges']} "
+                  f"refreshed={row['n_refreshed']} wall={row['wall_ms']:.0f}ms e2e={e2e}")
 
     query = (events.writeStream.foreachBatch(handle)
              .trigger(processingTime=f"{args.trigger_sec} seconds")
@@ -107,7 +114,8 @@ def main() -> None:
                 print(f"[consumer] {args.idle_timeout_sec} sn'dir veri yok; durduruluyor.")
                 query.stop()
     finally:
-        engine.finalize()
+        for engine in engines.values():
+            engine.finalize()
 
 
 if __name__ == "__main__":

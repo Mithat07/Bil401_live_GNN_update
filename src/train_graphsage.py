@@ -20,18 +20,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from model import GraphSAGEModel
 from utils import best_f1_threshold, compute_metrics, edges_up_to, set_seed
 
 
+os.environ["USE_LIBUV"] = "0"
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data", required=True, help="preprocess çıktısı data.pt yolu")
@@ -46,7 +50,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--patience", type=int, default=30, help="val AUPRC iyileşmezse erken durdurma")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--distributed", action="store_true",
+                   help="Torch DistributedDataParallel ile offline eğitimi etkinleştir")
+    p.add_argument("--local-rank", type=int, default=int(os.getenv("LOCAL_RANK", 0)),
+                   help=argparse.SUPPRESS)
     return p.parse_args()
+
+
+def is_rank_zero() -> bool:
+    return not dist.is_initialized() or dist.get_rank() == 0
+
+
+def init_distributed(args: argparse.Namespace, device: torch.device) -> None:
+    if not args.distributed:
+        return
+    if not dist.is_available():
+        raise RuntimeError("Distributed training requested but torch.distributed unavailable.")
+    backend = "nccl" if device.type == "cuda" else "gloo"
+    dist.init_process_group(backend=backend)
 
 
 @torch.no_grad()
@@ -57,10 +78,22 @@ def illicit_scores(model: GraphSAGEModel, x, edge_index) -> torch.Tensor:
 
 def main() -> None:
     args = parse_args()
-    set_seed(args.seed)
+    if args.distributed and args.device.startswith("cuda"):
+        torch.cuda.set_device(args.local_rank)
+
+    dev = torch.device(args.device if not args.distributed else
+                      f"cuda:{args.local_rank}" if args.device.startswith("cuda") else "cpu")
+    init_distributed(args, dev)
+    if args.distributed:
+        set_seed(args.seed + dist.get_rank())
+    else:
+        set_seed(args.seed)
+
     out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    dev = torch.device(args.device)
+    if is_rank_zero():
+        out_dir.mkdir(parents=True, exist_ok=True)
+    dev = torch.device(args.device if not args.distributed else
+                      f"cuda:{args.local_rank}" if args.device.startswith("cuda") else "cpu")
 
     # ---------- Veri ----------
     d = torch.load(args.data, map_location="cpu", weights_only=True)
@@ -85,6 +118,8 @@ def main() -> None:
     model = GraphSAGEModel(in_dim=x.shape[1], hidden_dim=args.hidden_dim,
                            emb_dim=args.emb_dim, num_layers=args.num_layers,
                            dropout=args.dropout).to(dev)
+    if args.distributed:
+        model = DDP(model, device_ids=[args.local_rank] if dev.type == "cuda" else None)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # ---------- Eğitim döngüsü ----------
@@ -108,42 +143,49 @@ def main() -> None:
 
         if val_auprc > best_val_auprc:
             best_val_auprc, best_epoch = val_auprc, epoch
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-        if epoch % 10 == 0 or epoch == 1:
+            base_model = model.module if args.distributed else model
+            best_state = {k: v.detach().cpu().clone() for k, v in base_model.state_dict().items()}
+        if is_rank_zero() and (epoch % 10 == 0 or epoch == 1):
             print(f"epoch {epoch:3d}  loss={loss_val:.4f}  val_AUPRC={val_auprc:.4f}  "
                   f"(best {best_val_auprc:.4f} @ {best_epoch})")
         if epoch - best_epoch >= args.patience:
             print(f"[erken durdurma] {args.patience} epoch'tur iyileşme yok.")
             break
-    print(f"[eğitim] {time.time() - t0:.1f} sn, en iyi epoch {best_epoch}")
+    if is_rank_zero():
+        print(f"[eğitim] {time.time() - t0:.1f} sn, en iyi epoch {best_epoch}")
 
-    # ---------- En iyi modeli geri yükle, eşiği val'de seç ----------
-    model.load_state_dict(best_state)
-    scores_val = illicit_scores(model, x, e_val)[val_mask].cpu().numpy()
-    yv = y[val_mask].cpu().numpy()
-    thr, f1_val = best_f1_threshold(yv, scores_val)
-    val_metrics = compute_metrics(yv, scores_val, thr)
-    print(f"[val] AUPRC={val_metrics['auprc']:.4f}  F1@{thr:.3f}={val_metrics['f1']:.4f}")
+    base_model = model.module if args.distributed else model
+    base_model.load_state_dict(best_state)
+    if is_rank_zero():
+        # ---------- En iyi modeli geri yükle, eşiği val'de seç ----------
+        scores_val = illicit_scores(base_model, x, e_val)[val_mask].cpu().numpy()
+        yv = y[val_mask].cpu().numpy()
+        thr, f1_val = best_f1_threshold(yv, scores_val)
+        val_metrics = compute_metrics(yv, scores_val, thr)
+        print(f"[val] AUPRC={val_metrics['auprc']:.4f}  F1@{thr:.3f}={val_metrics['f1']:.4f}")
 
-    # ---------- Test (streaming döneminin offline üst sınırı: her gömü taze) ----------
-    scores_test = illicit_scores(model, x, e_test)[test_mask].cpu().numpy()
-    yt = y[test_mask].cpu().numpy()
-    test_metrics = compute_metrics(yt, scores_test, thr)
-    print(f"[test] AUPRC={test_metrics['auprc']:.4f}  F1={test_metrics['f1']:.4f}  "
-          f"P={test_metrics['precision']:.4f}  R={test_metrics['recall']:.4f}")
-    print("  (Bu test skoru = 2. fazdaki Full-Always politikasının hedef üst sınırı.)")
+        # ---------- Test (streaming döneminin offline üst sınırı: her gömü her an taze) ----------
+        scores_test = illicit_scores(base_model, x, e_test)[test_mask].cpu().numpy()
+        yt = y[test_mask].cpu().numpy()
+        test_metrics = compute_metrics(yt, scores_test, thr)
+        print(f"[test] AUPRC={test_metrics['auprc']:.4f}  F1={test_metrics['f1']:.4f}  "
+              f"P={test_metrics['precision']:.4f}  R={test_metrics['recall']:.4f}")
+        print("  (Bu test skoru = 2. fazdaki Full-Always politikasının hedef üst sınırı.)")
 
-    # ---------- Kaydet ----------
-    model.save(out_dir / "model_best.pt",
-               extra={"threshold": thr, "best_epoch": best_epoch,
-                      "train_end": train_end, "val_end": val_end, "max_ts": max_ts,
-                      "seed": args.seed})
-    (out_dir / "metrics.json").write_text(json.dumps(
-        {"val": val_metrics, "test_offline_upper_bound": test_metrics,
-         "class_weight_illicit": float(w[1]), "args": vars(args) | {"device": str(dev)}},
-        indent=2))
-    pd.DataFrame(log_rows).to_csv(out_dir / "train_log.csv", index=False)
-    print(f"[tamam] {out_dir}/model_best.pt, metrics.json, train_log.csv")
+        # ---------- Kaydet ----------
+        base_model.save(out_dir / "model_best.pt",
+                   extra={"threshold": thr, "best_epoch": best_epoch,
+                          "train_end": train_end, "val_end": val_end, "max_ts": max_ts,
+                          "seed": args.seed})
+        (out_dir / "metrics.json").write_text(json.dumps(
+            {"val": val_metrics, "test_offline_upper_bound": test_metrics,
+             "class_weight_illicit": float(w[1]), "args": vars(args) | {"device": str(dev)}},
+            indent=2))
+        pd.DataFrame(log_rows).to_csv(out_dir / "train_log.csv", index=False)
+        print(f"[tamam] {out_dir}/model_best.pt, metrics.json, train_log.csv")
+    if args.distributed and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
