@@ -9,10 +9,22 @@ BIL 401 projesi (StreamTGN-esinli adaptif yerel gömü güncelleme) — Üye 2 t
 
 ## Kurulum
 
+Önerilen Python sürümü: 3.10, 3.11 veya 3.12. Windows'ta resmi Python kurulumunu kullanın; eski MinGW/GCC veya Python 3.13+ ile NumPy kaynak derlemesi hata verir.
+
 ```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r src/requirements.txt
 ```
+
+Eğer hata alırsanız:
+
+- `NumPy requires GCC >= 8.4` -> eski MinGW/GCC toolchain'ini PATH'ten kaldırın
+- `pip install -r requirements.txt` yerine `python -m pip install -r src/requirements.txt` kullanın
+- Python 3.11/3.12 ile yeni bir venv oluşturun
+
+Kök `requirements.txt` dosyası da `src/requirements.txt` dosyasına yönlendirme yapar.
 
 ## Veri
 
