@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--initial-state", required=True)
     p.add_argument("--stream", default=None, help="stream_edges.csv (varsayılan: data.pt klasörü)")
     p.add_argument("--policy", required=True,
-                   choices=["full_always", "local_always", "local_periodic", "local_adaptive", "all"])
+                   choices=["no_refresh", "full_always", "local_always", "local_periodic", "local_adaptive", "all"])
     p.add_argument("--period", type=int, default=5, help="local_periodic: N")
     p.add_argument("--tau", type=float, default=0.5)
     p.add_argument("--alpha", type=float, default=0.5)
@@ -203,7 +203,7 @@ def main() -> None:
     stream_path = args.stream or (Path(args.data).parent / "stream_edges.csv")
     stream_df = pd.read_csv(stream_path)
 
-    names = (["full_always", "local_always", "local_periodic", "local_adaptive"]
+    names = (["no_refresh", "full_always", "local_always", "local_periodic", "local_adaptive"]
              if args.policy == "all" else [args.policy])
     results = [run_one(n, args, d, model, init, stream_df) for n in names]
 

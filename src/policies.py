@@ -1,6 +1,7 @@
 """Refresh politikaları — deneyin bağımsız değişkeni.
 
-Dört politika tek arayüzün arkasında (proposal Tablo 1):
+Beş politika tek arayüzün arkasında (proposal Tablo 1):
+  NoRefresh      streaming boyunca hiçbir düğümü yenilemez (alt sınır)
   FullAlways     her batch, TÜM düğümler                (en pahalı baseline)
   LocalAlways    her batch, affected L-hop kümesi       (yerellik etkisi)
   LocalPeriodic  her N batch, biriken affected kümesi   (ucuz baseline)
@@ -27,6 +28,14 @@ class Policy:
 
     def params(self) -> dict:
         return {}
+
+
+class NoRefresh(Policy):
+    """Başlangıç embedding cache'ini akış boyunca sabit tutan kontrol kolu."""
+    name = "no_refresh"
+
+    def decide(self, affected, store, batch_id):
+        return set()
 
 
 class FullAlways(Policy):
@@ -118,6 +127,7 @@ class LocalAdaptive(Policy):
 
 def make_policy(name: str, **kw) -> Policy:
     table = {
+        "no_refresh": lambda: NoRefresh(),
         "full_always": lambda: FullAlways(),
         "local_always": lambda: LocalAlways(),
         "local_periodic": lambda: LocalPeriodic(period=kw.get("period", 5)),

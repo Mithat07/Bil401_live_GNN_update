@@ -161,35 +161,44 @@ Bu yapıdaki `checkpointLocation` ve `out-dir` için MinIO veya paylaşılan HDF
 
 ## Faz 2 — Statik replay ile politika deneyi (Kafka'sız uçtan uca)
 
-```bash
+```powershell
 # Offline modelin ts bazlı analizi (ts-43 çöküşünü doğrular; rapor figürü)
 python src/analyze_offline_by_ts.py --data processed/data.pt --model runs/sage_v1/model_best.pt
 
-# Dört politikayı aynı akışta koş (CPU'da ~5-15 dk; full_always en yavaşı)
-python src/replay.py --data processed/data.pt --model runs/sage_v1/model_best.pt \
-    --initial-state runs/sage_v1/initial_state.pt --policy all --out-dir runs/replay
+# Beş politikayı aynı akışta koş (CPU'da ~5-15 dk; full_always en yavaşı)
+python src/replay.py `
+  --data processed/data.pt `
+  --model runs/sage_v1/model_best.pt `
+  --initial-state runs/sage_v1/initial_state.pt `
+  --policy all `
+  --out-dir runs/replay
 
-# Adaptif politikanın tau taraması (exp normalizasyonla; Pareto'nun adaptif kolu)
-for TAU in 0.2 0.3 0.4 0.5 0.6; do
-  python src/replay.py --data processed/data.pt --model runs/sage_v1/model_best.pt \
-      --initial-state runs/sage_v1/initial_state.pt --policy local_adaptive \
-      --tau $TAU --staleness-norm exp --out-dir runs/replay/adaptive_t$TAU
-done
+# Adaptif politikanın karar bölgesindeki tau taraması (exp normalizasyon)
+foreach ($TAU in 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35) {
+  python src/replay.py `
+    --data processed/data.pt `
+    --model runs/sage_v1/model_best.pt `
+    --initial-state runs/sage_v1/initial_state.pt `
+    --policy local_adaptive `
+    --tau $TAU `
+    --staleness-norm exp `
+    --out-dir "runs/replay/adaptive_t$TAU"
+}
 
 # Tablo + Pareto figürü
-python src/compare_runs.py --runs runs/replay/* runs/replay/adaptive_t* \
-    --out runs/replay/pareto.png
+$RUNS = Get-ChildItem runs/replay -Directory | Select-Object -ExpandProperty FullName
+python src/compare_runs.py --runs $RUNS --out runs/replay/pareto.png
 ```
 
 ## Analiz araçları (mekanizma kanıtı + rapor figürleri)
 
-```bash
+```powershell
 # Kenar ablasyonu: komşuluk agregasyonunun değeri (bayat-kazandı hipotezinin testi)
 python src/eval_edge_ablation.py --data processed/data.pt --model runs/sage_v1/model_best.pt
 
 # Politika bazlı zaman-içinde-kalite figürü (streaming ana grafiği)
-python src/plot_quality_over_time.py --runs runs/replay/* runs/replay/adaptive_t* \
-    --out runs/replay/quality_over_time.png
+$RUNS = Get-ChildItem runs/replay -Directory | Select-Object -ExpandProperty FullName
+python src/plot_quality_over_time.py --runs $RUNS --out runs/replay/quality_over_time.png
 ```
 
 `summary.json` alanları: `quality` (birincil, arrival-time scoring — düğüm ilk

@@ -140,6 +140,7 @@ class StreamingEngine:
         y_true = self.y[nodes]
         y_score = np.array([self.predicted[n][0] for n in nodes])
         fresh = np.array([self.predicted[n][3] for n in nodes])
+        arrival_batches = np.array([self.predicted[n][2] for n in nodes])
         quality = compute_metrics(y_true, y_score, self.threshold)
         y_end = self.model.score_illicit(self.store.emb[nodes]).numpy()
         quality_end = compute_metrics(y_true, y_end, self.threshold)
@@ -160,6 +161,14 @@ class StreamingEngine:
             },
             "n_batches": int(self.batch_id), "n_predicted": len(nodes),
             "n_fallback": len(missing), "threshold": self.threshold,
+            "arrival_diagnostics": {
+                "first_prediction_batch": int(arrival_batches[arrival_batches >= 0].min())
+                if np.any(arrival_batches >= 0) else None,
+                "prediction_batches": int(len(np.unique(arrival_batches[arrival_batches >= 0]))),
+                "max_predictions_in_one_batch": int(pb.n_new_preds.max()) if len(pb) else 0,
+                "prediction_concentration": float(pb.n_new_preds.max() / len(nodes))
+                if len(pb) and len(nodes) else None,
+            },
         }
         pb.to_csv(self.out_dir / "per_batch.csv", index=False)
         pd.DataFrame({"node": nodes, "score": y_score, "label": y_true,
