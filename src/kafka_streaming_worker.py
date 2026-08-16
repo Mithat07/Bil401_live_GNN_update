@@ -37,7 +37,15 @@ def parse_args() -> argparse.Namespace:
                    help="Yeni veri gelmezse kaç saniye sonra sonlandırılacağı")
     p.add_argument("--out-dir", required=True,
                    help="Çıktı klasörü (log/summary yazmak için)")
-    p.add_argument("--policy", default="local_adaptive", choices=["local_adaptive", "global_adaptive", "fixed"])
+    p.add_argument("--policy", default="local_adaptive",
+                   choices=["no_refresh", "full_always", "local_always",
+                            "local_periodic", "local_adaptive"])
+    p.add_argument("--period", type=int, default=5, help="local_periodic: N")
+    p.add_argument("--tau", type=float, default=0.5)
+    p.add_argument("--alpha", type=float, default=0.5)
+    p.add_argument("--beta", type=float, default=0.25)
+    p.add_argument("--gamma", type=float, default=0.25)
+    p.add_argument("--staleness-norm", default="exp", choices=["exp", "pool_max"])
     return p.parse_args()
 
 
@@ -74,11 +82,12 @@ def main() -> None:
         initial_state=args.initial_state,
         policy=args.policy,
         out_dir=str(out_dir),
-        tau=0.5,
-        alpha=0.5,
-        beta=0.25,
-        gamma=0.25,
-        norm="exp",
+        period=args.period,
+        tau=args.tau,
+        alpha=args.alpha,
+        beta=args.beta,
+        gamma=args.gamma,
+        norm=args.staleness_norm,
     )
 
     consumer = make_consumer(args)

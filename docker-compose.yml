@@ -31,7 +31,7 @@ services:
     working_dir: /app
     command: bash -lc "python src/kafka_streaming_worker.py --data processed/data.pt \
       --model runs/sage_v1/model_best.pt --initial-state runs/sage_v1/initial_state.pt \
-      --bootstrap kafka:29092 --topic edges --group-id gnn-refresh \
+      --bootstrap kafka:29092 --topic edges --group-id gnn-refresh-w1 \
       --batch-size 2000 --batch-timeout 1.0 --idle-timeout 30 \
       --out-dir /app/runs/kafka/consumer1"
 
@@ -44,6 +44,6 @@ services:
     working_dir: /app
     command: bash -lc "python src/kafka_streaming_worker.py --data processed/data.pt \
       --model runs/sage_v1/model_best.pt --initial-state runs/sage_v1/initial_state.pt \
-      --bootstrap kafka:29092 --topic edges --group-id gnn-refresh \
+      --bootstrap kafka:29092 --topic edges --group-id gnn-refresh-w2 \
       --batch-size 2000 --batch-timeout 1.0 --idle-timeout 30 \
       --out-dir /app/runs/kafka/consumer2"

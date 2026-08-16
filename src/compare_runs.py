@@ -29,6 +29,10 @@ def main() -> None:
         if not f.exists():
             continue
         s = json.loads(f.read_text())
+        if s.get("status", "ok") != "ok" or s.get("n_batches", 1) == 0:
+            print(f"[ATLANDI] {r}: status={s.get('status')} n_batches={s.get('n_batches')} "
+                  f"fallback={s.get('n_fallback')}")
+            continue
         rows.append({
             "policy": s["policy"], "params": json.dumps(s["params"]),
             "auprc": s["quality"]["auprc"], "f1": s["quality"]["f1"],

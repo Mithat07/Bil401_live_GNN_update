@@ -47,3 +47,16 @@ desktop.ini
 
 data.zip
 data/elliptic/elliptic_txs_features.csv
+
+# Calisma notlari (repoya girmez)
+YOL_HARITASI.md
+NE_YAPACAGIZ.md
+RAPOR_METINLERI.md
+TESLIM_PLANI.md
+BULGULAR.md
+DUZELTME_PLANI.md
+multiseed.log
+
+# Uretilen tablolar KALSIN (yukaridaki *.csv kuralini gecersiz kilar):
+# figures/*.csv dosyalari raporun sayilarinin kaynagi, kucukler.
+!figures/*.csv

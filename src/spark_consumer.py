@@ -53,7 +53,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bootstrap", default="localhost:9092")
     p.add_argument("--topic", default="edges")
     p.add_argument("--trigger-sec", type=int, default=2)
-    p.add_argument("--max-offsets-per-trigger", type=int, default=None)
+    p.add_argument("--max-offsets-per-trigger", type=int, default=None,
+                   help="batch basina maks. offset; gecikme olculen kosularda ZORUNLU "
+                        "(oneri: events_per_sec * trigger_sec)")
+    p.add_argument("--checkpoint-dir", default=None,
+                   help="varsayilan: <out-dir>/_checkpoint_<epoch>. Ayni dizini tekrar "
+                        "kullanmak startingOffsets=earliest'i YOK SAYAR.")
+    p.add_argument("--reuse-checkpoint", action="store_true",
+                   help="mevcut checkpoint'ten bilerek devam et")
     p.add_argument("--idle-timeout-sec", type=int, default=30,
                    help="bu süre boyunca yeni batch gelmezse akışı durdur ve finalize et")
     p.add_argument("--out-dir", required=True)
@@ -72,6 +79,24 @@ def main() -> None:
             policy=name, out_dir=str(out_dir),
             period=args.period, tau=args.tau, alpha=args.alpha,
             beta=args.beta, gamma=args.gamma, norm=args.staleness_norm)
+
+    # ---- checkpoint korumasi ----------------------------------------------
+    # Ayni checkpoint dizini ile ikinci kez kosmak, commit edilmis offset'leri
+    # kullanir ve startingOffsets=earliest YOK SAYILIR -> 0 batch islenir.
+    # Ara rapordaki "LocalAdaptive 0 batch" olayinin kok nedeni buydu.
+    ckpt = args.checkpoint_dir or f"{args.out_dir}/_checkpoint_{int(time.time())}"
+    if Path(ckpt).exists() and not args.reuse_checkpoint:
+        raise SystemExit(
+            f"[HATA] checkpoint zaten var: {ckpt}\n"
+            f"       Bu dizinle kosmak commit edilmis offset'leri kullanir;\n"
+            f"       startingOffsets=earliest YOK SAYILIR ve 0 batch islenir.\n"
+            f"       Cozum: dizini silin, --checkpoint-dir ile yeni yol verin,\n"
+            f"       ya da bilerek devam icin --reuse-checkpoint ekleyin.")
+    print(f"[consumer] checkpoint={ckpt}  topic={args.topic}  "
+          f"maxOffsetsPerTrigger={args.max_offsets_per_trigger}  policy={args.policy}")
+    if args.max_offsets_per_trigger is None:
+        print("[UYARI] maxOffsetsPerTrigger ayarli DEGIL: ilk batch topic'teki her seyi "
+              "ceker, e2e_ms kuyruk birikmesini olcer. Bu kosudan GECIKME RAPORLAMAYIN.")
 
     spark = (SparkSession.builder.appName("gnn-refresh-serving").getOrCreate())
     spark.sparkContext.setLogLevel("WARN")
@@ -105,7 +130,7 @@ def main() -> None:
 
     query = (events.writeStream.foreachBatch(handle)
              .trigger(processingTime=f"{args.trigger_sec} seconds")
-             .option("checkpointLocation", f"{args.out_dir}/_checkpoint")
+             .option("checkpointLocation", ckpt)
              .start())
     try:
         while query.isActive:
